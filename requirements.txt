@@ -1,0 +1,7 @@
+aiogram
+ultralytics
+opencv-python
+aiofiles
+torch
+torchvision
+torchaudio
