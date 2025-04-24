@@ -40,10 +40,9 @@
 
 1.  **Клонируйте репозиторий:**
     ```bash
-    git clone <url-вашего-репозитория>
-    cd <папка-репозитория>
+    git clone https://github.com/sackvoich/YOLO_video_processing_bot
+    cd YOLO_video_processing_bot
     ```
-    *Замените `<url-вашего-репозитория>` и `<папка-репозитория>` на актуальные значения.*
 
 2.  **Установите зависимости:**
     ```bash
