@@ -36,15 +36,27 @@ except Exception as e:
 @dp.message(CommandStart())
 async def send_welcome(message: types.Message):
     """Отправляет приветственное сообщение."""
-    await message.reply("Привет! 👋\nОтправь мне видео (как ФАЙЛ), и я попробую распознать на нем объекты с помощью YOLO и пришлю результат.")
+    await message.reply("Привет! 👋\nОтправь мне видео (как файл или обычное видео), и я распознаю объекты с помощью YOLO.")
 
-@dp.message(F.document & (F.document.mime_type.startswith('video/')))
-async def handle_video_document(message: types.Message):
-    """Обрабатывает видео, присланное как документ."""
-    document = message.document
+@dp.message(F.document | F.video)
+async def handle_all_videos(message: types.Message):
+    """Обрабатывает все типы видео (документ и обычное видео)"""
     user_id = message.from_user.id
     chat_id = message.chat.id
     message_id = message.message_id
+
+    # Определение типа файла
+    if message.video:
+        file = message.video
+        is_document = False
+    else:
+        file = message.document
+        is_document = True
+
+    # Проверка MIME-типа для документов
+    if is_document and not (file.mime_type and file.mime_type.startswith('video/')):
+        await message.reply("Пожалуйста, отправьте видеофайл.")
+        return
 
     request_id = str(uuid.uuid4())
     input_video_path = os.path.join(TEMP_DIR, f"{request_id}_input.mp4")
@@ -52,19 +64,19 @@ async def handle_video_document(message: types.Message):
 
     try:
         await message.reply("Принял видео. Начинаю скачивание...")
-        file_info = await bot.get_file(document.file_id)
+        file_info = await bot.get_file(file.file_id)
         await bot.download_file(file_info.file_path, input_video_path)
-        logging.info(f"Видео {document.file_name} ({document.file_size} байт) от пользователя {user_id} скачано в {input_video_path}")
-        await message.reply("Видео скачано. Начинаю обработку с помощью YOLO... ⏳ Это может занять время.")
+        logging.info(f"Видео {file.file_name} ({file.file_size} байт) от {user_id} скачано в {input_video_path}")
+        await message.reply("Видео скачано. Начинаю обработку с YOLO... ⏳")
     except Exception as e:
         logging.error(f"Ошибка скачивания видео от {user_id}: {e}")
-        await message.reply("Не смог скачать видео. Попробуй еще раз или другой файл.")
+        await message.reply("Не смог скачать видео. Попробуй еще раз.")
         return
 
     try:
         cap = cv2.VideoCapture(input_video_path)
         if not cap.isOpened():
-            raise IOError("Не удалось открыть видеофайл для обработки.")
+            raise IOError("Не удалось открыть видеофайл.")
 
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -83,12 +95,10 @@ async def handle_video_document(message: types.Message):
 
             frame_count += 1
             if frame_count % int(fps) == 0:
-                 logging.info(f"Обработка кадра {frame_count}/{total_frames} для видео {request_id}")
+                logging.info(f"Обработка кадра {frame_count}/{total_frames}")
 
             results = model(frame, device=device, verbose=False)
-
             annotated_frame = results[0].plot()
-
             out.write(annotated_frame)
 
         cap.release()
@@ -96,49 +106,41 @@ async def handle_video_document(message: types.Message):
         logging.info(f"Обработка видео {request_id} завершена.")
 
     except Exception as e:
-        logging.error(f"Ошибка обработки видео {request_id} от {user_id}: {e}")
-        await message.reply("Произошла ошибка во время обработки видео. 😢")
+        logging.error(f"Ошибка обработки видео {request_id}: {e}")
+        await message.reply("Ошибка обработки видео. 😢")
         if os.path.exists(input_video_path): os.remove(input_video_path)
         if os.path.exists(output_video_path): os.remove(output_video_path)
         return
 
     try:
         await message.reply("Обработка завершена! Отправляю результат...")
-        output_file = FSInputFile(output_video_path, filename=f"processed_{document.file_name or 'video.mp4'}")
-        await bot.send_video(chat_id=chat_id, video=output_file, caption="Готово! ✅ Объекты размечены.", reply_to_message_id=message_id)
-        logging.info(f"Обработанное видео {request_id} отправлено пользователю {user_id}")
+        output_file = FSInputFile(output_video_path, filename=f"processed_{file.file_name or 'video.mp4'}")
+        await bot.send_video(chat_id=chat_id, video=output_file, caption="Готово! ✅", reply_to_message_id=message_id)
+        logging.info(f"Видео {request_id} отправлено пользователю {user_id}")
     except Exception as e:
-        logging.error(f"Ошибка отправки видео {request_id} пользователю {user_id}: {e}")
+        logging.error(f"Ошибка отправки видео {request_id}: {e}")
         try:
-            await message.reply("Не смог отправить как видео, пробую как документ...")
-            output_file_doc = FSInputFile(output_video_path, filename=f"processed_{document.file_name or 'video.mp4'}")
-            await bot.send_document(chat_id=chat_id, document=output_file_doc, caption="Готово! ✅ Объекты размечены.", reply_to_message_id=message_id)
+            await message.reply("Пробую отправить как документ...")
+            output_file_doc = FSInputFile(output_video_path, filename=f"processed_{file.file_name or 'video.mp4'}")
+            await bot.send_document(chat_id=chat_id, document=output_file_doc, caption="Готово! ✅", reply_to_message_id=message_id)
         except Exception as e2:
-             logging.error(f"Ошибка отправки видео {request_id} как документа пользователю {user_id}: {e2}")
-             await message.reply("Не удалось отправить обработанное видео. Возможно, оно слишком большое.")
+            logging.error(f"Ошибка отправки документа {request_id}: {e2}")
+            await message.reply("Не удалось отправить видео. Возможно, оно слишком большое.")
     finally:
         try:
             if os.path.exists(input_video_path): os.remove(input_video_path)
             if os.path.exists(output_video_path): os.remove(output_video_path)
-            logging.info(f"Временные файлы для запроса {request_id} удалены.")
+            logging.info(f"Временные файлы {request_id} удалены.")
         except Exception as e:
-            logging.error(f"Ошибка удаления временных файлов для запроса {request_id}: {e}")
-
-
-@dp.message(F.video)
-async def handle_video_note(message: types.Message):
-    """Обработчик для видео-кружков или обычных видео (не как файл) - просим прислать как файл."""
-    await message.reply("Пожалуйста, отправь видео как обычный файл (без сжатия, 'Отправить как файл' или 'Send as File'), а не как видео-сообщение или кружок.")
+            logging.error(f"Ошибка удаления файлов {request_id}: {e}")
 
 @dp.message()
 async def handle_other_messages(message: types.Message):
-    """Обрабатывает любые другие сообщения."""
-    await message.reply("Я умею обрабатывать только видео, присланные как ФАЙЛ. Попробуй еще раз.")
-
+    """Обрабатывает некорректные сообщения."""
+    await message.reply("Я обрабатываю только видео. Попробуй еще раз.")
 
 # --- Запуск бота ---
 async def main():
-    """Основная функция для запуска бота."""
     logging.info("Запуск бота...")
     await dp.start_polling(bot)
 
@@ -146,6 +148,6 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logging.info("Бот остановлен вручную.")
+        logging.info("Бот остановлен.")
     except Exception as e:
-        logging.critical(f"Критическая ошибка при запуске бота: {e}")
+        logging.critical(f"Критическая ошибка: {e}")
